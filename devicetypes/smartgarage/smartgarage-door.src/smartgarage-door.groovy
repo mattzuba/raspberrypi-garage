@@ -24,7 +24,7 @@ metadata {
         capability "Relay Switch"
         capability "Configuration"
         capability "Refresh"
-        capability "Polling"
+        capability "Health Check"
         
         attribute "cpu", "number"
         attribute "ram", "number"
@@ -75,7 +75,7 @@ metadata {
             ]
         }
         valueTile("ram", "device.ram", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-        	state "ram", label:'RAM\n${currentValue}${unit}', unit:"MB", defaultState: true, backgroundColors: [
+        	state "ram", label:'RAM\n${currentValue} ${unit}', unit:"MB", defaultState: true, backgroundColors: [
             	[value: 400, color:'#44b621'],
             	[value: 200, color:'#f1d801'],
             	[value: 100, color:'#d04e00'],
@@ -107,8 +107,7 @@ def uninstalled() {
 }
 
 def initialize() {
-    unschedule()
-	runEvery5Minutes(status)
+    sendEvent(name: "checkInterval", value: 60 * 5, displayed: false)
 }
 
 // parse events into attributes
@@ -119,11 +118,16 @@ def parse(String description) {
     def events = []
     def state = msg.data?.state
     if (state) {
-    	log.debug "Updating state to '${state}'"
+    	log.info "Updating state to '${state}'"
         
         events << createEvent(name: "door", value: state, descriptionText:"Door is ${state}")
+        if (state == 'open' || state == 'closed') {
+	        events << createEvent(name: "timeElapsed", value: "Just now", displayed: false)
+        } else {
+	        events << createEvent(name: "timeElapsed", value: "", displayed: false)
+        }
         
-        if (state == 'open' || state == 'opening'){
+        if (state == 'open' || state == 'opening') {
         	events << createEvent(name: "contact", value: "open", displayed: false)
             events << createEvent(name: "switch", value: "on", displayed: false)
         } else if (state == 'closed') {
@@ -132,68 +136,37 @@ def parse(String description) {
         }
     }
     
-    def cpu = msg.data?.cpu
-    if (cpu) {
-	    events << createEvent(name: "cpu", value: cpu, displayed: false)
-    }
-
-    def ram = msg.data?.ram?.free
-    if (ram) {
-	    events << createEvent(name: "ram", value: ram, displayed: false)
-    }
-
-    def uptime = msg.data?.uptime
-    if (uptime) {
-	    events << createEvent(name: "uptime", value: uptime, displayed: false)
-    }
-
-    def timeElapsed = msg.data?.timeElapsed
-    if (timeElapsed) {
-	    events << createEvent(name: "timeElapsed", value: timeElapsed, displayed: false)
-    }
-
     return events
 }
 
 // Sends a REST call to the device so it can register the hub IP and port to send events too
 def configure() {
-	log.debug "Executing 'configure'"
+	log.info "Executing 'configure'"
     sendHubCommand(new physicalgraph.device.HubAction([
         method: "POST", 
         path: "/configure", 
         headers: [ HOST: getHostAddress() ],
-        body : [
-            hubAddress: getCallBackAddress()
-        ]
-    ]))
-}
-
-def status() {
-	log.debug "Executing 'status'"
-    sendHubCommand(new physicalgraph.device.HubAction([
-        method: "GET", 
-        path: "/status", 
-        headers: [ HOST: getHostAddress() ]
-    ]))
+        body : [ hubAddress: getCallBackAddress() ]
+    ], null, [ callback: noop ]))
 }
 
 // handle commands
 def open() {
-	log.debug "Executing 'open'"
+	log.info "Executing 'open'"
     sendHubCommand(new physicalgraph.device.HubAction([
         method: "GET", 
         path: "/open", 
         headers: [ HOST: getHostAddress() ]
-    ]))
+    ], null, [ callback: noop ]))
 }
 
 def close() {
-	log.debug "Executing 'close'"
+	log.info "Executing 'close'"
     sendHubCommand(new physicalgraph.device.HubAction([
         method: "GET", 
         path: "/close", 
         headers: [ HOST: getHostAddress() ]
-    ]))
+    ], null, [ callback: noop ]))
 }
 
 def push() {
@@ -224,11 +197,31 @@ def off() {
 }
 
 def refresh() {
-	status()
+	log.info "Refreshing device"
+    sendHubCommand(new physicalgraph.device.HubAction([
+        method: "GET", 
+        path: "/status", 
+        headers: [ HOST: getHostAddress() ]
+    ], null, [ callback: refreshCallback ]))
 }
 
-def poll() {
-	status()
+def refreshCallback(physicalgraph.device.HubResponse hubResponse) {
+	def msg = hubResponse.json
+
+    log.debug "Processing refresh: ${msg}"
+    
+    if (hubResponse.status == 200) {
+        sendEvent(name: "door", value: msg.state)
+        sendEvent(name: "cpu", value: msg.cpu, displayed: false)
+        sendEvent(name: "ram", value: msg.ram.free, displayed: false)
+        sendEvent(name: "uptime", value: msg.uptime, displayed: false)
+        sendEvent(name: "timeElapsed", value: msg.timeElapsed, displayed: false)
+    }
+}
+
+def ping() {
+    log.debug "ping() was called treat like refresh()"
+    refresh()
 }
 
 def sync(ip, port) {
@@ -274,4 +267,8 @@ private Integer convertHexToInt(hex) {
 
 private String convertHexToIP(hex) {
     return [convertHexToInt(hex[0..1]),convertHexToInt(hex[2..3]),convertHexToInt(hex[4..5]),convertHexToInt(hex[6..7])].join(".")
+}
+
+def noop(physicalgraph.device.HubResponse hubResponse) {
+	// Just a noop for callbacks
 }
